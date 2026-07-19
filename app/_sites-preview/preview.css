@@ -1,0 +1,6 @@
+.sites-skeleton-shell{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none}
+.sites-skeleton-status{opacity:0.52;pointer-events:none}
+.sites-skeleton-search-placeholder{width:320px;height:28px;pointer-events:none}
+/* keep skeleton visible but allow interaction with underlying controls */
+/* avoid global element resets that tests reject */
+@media (prefers-reduced-motion:reduce){*{animation:none!important}}
