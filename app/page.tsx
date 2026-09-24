@@ -237,7 +237,10 @@ export default function Home() {
         <div className="resultsHead"><div><h2>Matching carriers</h2><p>{status}</p></div><div><button disabled={!rows.length || running} onClick={downloadCsv}>Download CSV</button><button disabled={!rows.length || running} onClick={createSheet}>Create Google Sheet</button></div></div>
         <div className="tableWrap"><table><thead><tr><th>MC</th><th>USDOT</th><th>Legal name</th><th>Phone</th><th>Email</th><th>Physical address</th></tr></thead><tbody>{rows.length ? rows.map((r, i) => <tr key={`${r.mcNumber}-${i}`}><td>MC-{r.mcNumber}</td><td>{r.usdotNumber}</td><td><strong>{r.legalName}</strong></td><td>{r.phone || "—"}</td><td>{r.email || "Not published"}</td><td>{r.physicalAddress}</td></tr>) : <tr><td className="empty" colSpan={6}>Matching carriers will appear here as the scan runs.</td></tr>}</tbody></table></div>
       </section>
-      <footer>Use responsibly. Data remains subject to FMCSA source accuracy and availability.</footer>
+      <footer style={{ display: "grid", gap: 12, textAlign: "center" }}>
+        <div style={{ fontSize: 13, color: "var(--muted)" }}>Use responsibly. Data remains subject to FMCSA source accuracy and availability.</div>
+        <div style={{ fontWeight: 700, fontSize: 15, color: "var(--text)" }}>Developed by Rohail Asad © All rights reserved</div>
+      </footer>
     </main>
   );
 }

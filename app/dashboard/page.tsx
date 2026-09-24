@@ -27,6 +27,11 @@ export default function DashboardPage() {
     fetch("/api/auth/status", { cache: "no-store" })
       .then((res) => res.json())
       .then((result) => {
+        // Already signed in with an active license on this device: go straight to the scanner.
+        if (result.authenticated && result.license?.status === "active" && result.device?.active) {
+          window.location.href = "/";
+          return;
+        }
         setAuth(result);
       })
       .catch(() => setAuth({ authenticated: false }))
@@ -51,8 +56,8 @@ export default function DashboardPage() {
 
     const result = await response.json();
     if (response.ok) {
-      setMessage("License activated. Reloading dashboard...");
-      window.location.reload();
+      setMessage("License activated. Opening scanner...");
+      window.location.href = "/";
     } else {
       setMessage(result.error || "License activation failed.");
     }
