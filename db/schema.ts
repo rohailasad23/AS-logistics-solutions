@@ -14,6 +14,8 @@ export const users = sqliteTable("users", {
 export const licenses = sqliteTable("licenses", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   keyHash: text("key_hash").notNull(),
+  licenseKey: text("license_key"),
+  ownerName: text("owner_name"),
   plan: text("plan").notNull().default("starter"),
   maxDevices: integer("max_devices").notNull().default(1),
   status: text("status").notNull().default("active"),
@@ -41,6 +43,19 @@ export const devices = sqliteTable("devices", {
   active: integer("active").notNull().default(1),
   lastSeenAt: text("last_seen_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+
+export const vpnServers = sqliteTable("vpn_servers", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  label: text("label").notNull(),
+  countryCode: text("country_code"),
+  relayUrl: text("relay_url").notNull(),
+  secretKey: text("secret_key").notNull(),
+  active: integer("active").notNull().default(0),
+  lastCheckedAt: text("last_checked_at"),
+  lastStatus: text("last_status").notNull().default("unknown"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
 
 export const auditLogs = sqliteTable("audit_logs", {

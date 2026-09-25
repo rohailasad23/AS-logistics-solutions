@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getSessionTokenFromHeader, getAuthSession, getActiveLicenseForUser, getActiveDeviceForLicense } from "@/lib/saas";
+import { getSessionTokenFromHeader, getAuthSession, getLicenseForUser, getActiveDeviceForLicense } from "@/lib/saas";
 
 export const runtime = "edge";
 
@@ -10,8 +10,8 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ authenticated: false });
   }
 
-  const license = await getActiveLicenseForUser(auth.user.id);
-  const device = license
+  const license = await getLicenseForUser(auth.user.id);
+  const device = license && license.status === "active"
     ? await getActiveDeviceForLicense(license.id, auth.user.id, auth.session.deviceId)
     : null;
 

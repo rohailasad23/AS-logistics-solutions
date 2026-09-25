@@ -18,6 +18,7 @@ export async function POST(req: NextRequest) {
     const licenseKey = String(body?.licenseKey || "").trim();
     const plan = String(body?.plan || "starter").trim() || "starter";
     const maxDevices = Number(body?.maxDevices || 1);
+    const ownerName = String(body?.ownerName || "").trim();
 
     if (!licenseKey) {
       return NextResponse.json({ error: "License key is required." }, { status: 400 });
@@ -26,7 +27,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Max devices must be at least 1." }, { status: 400 });
     }
 
-    await createLicenseKey(licenseKey, plan, maxDevices);
+    await createLicenseKey(licenseKey, plan, maxDevices, ownerName);
     return NextResponse.json({ ok: true });
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : "License creation failed." }, { status: 500 });

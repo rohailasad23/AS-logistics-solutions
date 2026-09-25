@@ -81,6 +81,15 @@ export default function DashboardPage() {
     <main style={{ padding: "4rem 6vw", maxWidth: 760 }}>
       <h1>Dashboard</h1>
       <p>Welcome, {auth.user?.companyName || auth.user?.email}.</p>
+      {auth.license?.status === "suspended" ? (
+        <section style={{ marginTop: 24, padding: 24, borderRadius: 18, background: "#fdecea", border: "1px solid #f3c4bd", boxShadow: "0 24px 60px rgba(139,43,40,.08)" }}>
+          <h2 style={{ color: "#8b2b28", margin: "0 0 8px" }}>License suspended</h2>
+          <p style={{ margin: 0, color: "#8b2b28" }}>
+            Your license key has been suspended by the admin. Kindly contact admin.
+          </p>
+        </section>
+      ) : null}
+
       <section style={{ marginTop: 24, padding: 24, borderRadius: 18, background: "#fff", boxShadow: "0 24px 60px rgba(35,76,55,.08)" }}>
         <h2>License status</h2>
         <p>{auth.license ? `Plan: ${auth.license.plan}, Status: ${auth.license.status}, Max devices: ${auth.license.maxDevices}` : "No active license assigned."}</p>

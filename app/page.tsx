@@ -39,10 +39,42 @@ export default function Home() {
   const [rows, setRows] = useState<Carrier[]>([]);
   const [status, setStatus] = useState("Ready");
   const [running, setRunning] = useState(false);
+  const [currentMc, setCurrentMc] = useState<number | null>(null);
+  const [completedMcs, setCompletedMcs] = useState<{ mc: number; matched: boolean }[]>([]);
+  const [progress, setProgress] = useState({ done: 0, total: 0 });
+  const [scanSpeed, setScanSpeed] = useState(0);
+  const speedTimestamps = useRef<number[]>([]);
   const [authState, setAuthState] = useState<AuthState>({ authenticated: false, loading: true });
   const [deviceId, setDeviceId] = useState<string>("");
   const [fingerprint, setFingerprint] = useState<string>("");
+  const [geo, setGeo] = useState<{ countryCode: string | null; countryName: string | null }>({ countryCode: null, countryName: null });
+  const [vpnConnected, setVpnConnected] = useState(false);
+  const [vpnNotice, setVpnNotice] = useState("");
+  const [showVpnModal, setShowVpnModal] = useState(false);
+  const [latestMc, setLatestMc] = useState<string | null>(null);
+  const [scanPaused, setScanPaused] = useState(false);
+  const [vpnBlockedNotice, setVpnBlockedNotice] = useState("");
   const stop = useRef(false);
+  const vpnConnectedRef = useRef(vpnConnected);
+  const runningRef = useRef(false);
+
+  useEffect(() => {
+    vpnConnectedRef.current = vpnConnected;
+    // The VPN's connection state changed, so any earlier "this VPN server was
+    // blocked by FMCSA" notice no longer applies — clear it so stale messages
+    // don't linger after the user disconnects/reconnects or switches servers.
+    setVpnBlockedNotice("");
+    // If a scan is in progress and the VPN drops, pause immediately.
+    // If it reconnects while paused, resume automatically.
+    if (runningRef.current) {
+      if (!vpnConnected) {
+        setScanPaused(true);
+        setStatus("Paused — VPN disconnected. Waiting to reconnect…");
+      } else {
+        setScanPaused(false);
+      }
+    }
+  }, [vpnConnected]);
 
   useEffect(() => {
     const savedDeviceId = window.localStorage.getItem("safer_device_id") || crypto.randomUUID();
@@ -50,6 +82,34 @@ export default function Home() {
     setDeviceId(savedDeviceId);
     const fingerprintValue = hashString(`${navigator.userAgent}:${savedDeviceId}`);
     setFingerprint(fingerprintValue);
+
+    // VPN detection: this runs as a fetch from the BROWSER itself (not our server), so it
+    // reflects whatever network path the browser is actually using right now — including a
+    // browser-extension VPN (which only proxies browser traffic) or a system-wide VPN.
+    // We remember the first-ever detected country for this browser as the "home" (no-VPN)
+    // baseline; a later check showing a different country means the network path changed,
+    // i.e. a VPN/proxy is active. Polled periodically to catch VPN toggling on/off live.
+    async function checkGeo() {
+      try {
+        const res = await fetch("https://ipwho.is/", { cache: "no-store" });
+        const result = await res.json();
+        const countryCode: string | null = result?.success !== false ? result.country_code || null : null;
+        const countryName: string | null = result?.success !== false ? result.country || null : null;
+        if (!countryCode) return;
+        setGeo({ countryCode, countryName });
+
+        let home = window.localStorage.getItem("safer_home_country");
+        if (!home) {
+          home = countryCode;
+          window.localStorage.setItem("safer_home_country", home);
+        }
+        setVpnConnected(countryCode !== home);
+      } catch {
+        // Leave current state unchanged if the check fails transiently (e.g. offline).
+      }
+    }
+    checkGeo();
+    const geoInterval = setInterval(checkGeo, 5000);
 
     fetch("/api/auth/status", { cache: "no-store" })
       .then((res) => res.json())
@@ -63,6 +123,8 @@ export default function Home() {
         });
       })
       .catch(() => setAuthState({ authenticated: false, loading: false }));
+
+    return () => clearInterval(geoInterval);
   }, []);
 
   const scannerEnabled = authState.authenticated && authState.license?.status === "active";
@@ -76,29 +138,62 @@ export default function Home() {
       return;
     }
 
+    if (!vpnConnected) {
+      setShowVpnModal(true);
+      setVpnNotice("VPN not connected. Kindly connect your VPN to start scanning.");
+      setStatus("Scan blocked — VPN not connected.");
+      return;
+    }
+    setVpnNotice("");
+
     const { start: normalizedStart, end: normalizedEnd } = normalizeMcRange(start, end);
     setStart(normalizedStart);
     setEnd(normalizedEnd);
 
-    if (normalizedEnd - normalizedStart + 1 > 500) {
-      setStatus("Please scan no more than 500 MC numbers at a time.");
-      return;
-    }
     stop.current = false;
+    runningRef.current = true;
     setRunning(true);
+    setScanPaused(false);
     setRows([]);
+    const total = normalizedEnd - normalizedStart + 1;
+    setProgress({ done: 0, total });
+    setCompletedMcs([]);
+    setLatestMc(null);
+    setVpnBlockedNotice("");
+    setScanSpeed(0);
+    speedTimestamps.current = [];
     const found: Carrier[] = [];
 
     for (let mc = normalizedStart; mc <= normalizedEnd && !stop.current; mc++) {
-      setStatus(`Checking MC ${mc.toLocaleString()} • ${mc - normalizedStart + 1} of ${normalizedEnd - normalizedStart + 1}`);
+      // Pause here if the VPN drops mid-scan; poll until it reconnects or the user stops the scan.
+      let wasPaused = false;
+      while (!vpnConnectedRef.current && !stop.current) {
+        wasPaused = true;
+        setScanPaused(true);
+        setStatus("Paused — VPN disconnected. Waiting to reconnect…");
+        await pause(800);
+      }
+      if (stop.current) break;
+      if (wasPaused) {
+        setScanPaused(false);
+        setStatus("VPN reconnected — resuming scan…");
+        await pause(400);
+      }
+
+      setCurrentMc(mc);
+      setStatus(`Checking MC ${mc.toLocaleString()} • ${mc - normalizedStart + 1} of ${total}`);
+      let matched = false;
       try {
         const response = await fetch(`/api/scrape?mc=${mc}`);
         const data = await response.json();
         if (response.ok && data.match) {
-          found.push(data.carrier);
+          matched = true;
+          found.unshift(data.carrier);
           setRows([...found]);
+          setLatestMc(data.carrier.mcNumber);
         } else if (data.error) {
           setStatus(data.error);
+          if (data.vpnBlocked) setVpnBlockedNotice(data.error);
           break;
         }
         if (!response.ok && response.status === 429) await pause(4000);
@@ -106,10 +201,26 @@ export default function Home() {
         setStatus(`Connection interrupted at MC ${mc}. You can start again.`);
         break;
       }
+
+      // Track scan speed using a rolling 5-second window of completion timestamps.
+      const now = Date.now();
+      speedTimestamps.current.push(now);
+      speedTimestamps.current = speedTimestamps.current.filter((t) => now - t <= 5000);
+      const windowSeconds = speedTimestamps.current.length > 1
+        ? (now - speedTimestamps.current[0]) / 1000
+        : 1;
+      setScanSpeed(windowSeconds > 0 ? speedTimestamps.current.length / windowSeconds : 0);
+
+      setProgress((p) => ({ ...p, done: mc - normalizedStart + 1 }));
+      setCompletedMcs((list) => [{ mc, matched }, ...list].slice(0, 6));
+
       await pause(1100);
     }
 
+    setCurrentMc(null);
     setRunning(false);
+    runningRef.current = false;
+    setScanPaused(false);
     setStatus(stop.current ? `Stopped • ${found.length} matching carriers found` : `Complete • ${found.length} matching carriers found`);
 
     if (found.length && !stop.current) {
@@ -193,6 +304,13 @@ export default function Home() {
           </div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+          <span
+            className={`vpn-status ${vpnConnected ? "connected" : "disconnected"}`}
+            title={geo.countryName ? `Detected network: ${geo.countryName}` : undefined}
+          >
+            <span className="vpn-status-dot" />
+            {vpnConnected ? `VPN Connected${geo.countryName ? ` · ${geo.countryName}` : ""}` : "VPN Not Connected"}
+          </span>
           <span className="source">Official SAFER source</span>
           {authState.authenticated ? (
             <button onClick={signOut} style={{ border: "1px solid #d8ddd7", borderRadius: 8, padding: "10px 14px", background: "#fff" }}>Sign out</button>
@@ -201,6 +319,15 @@ export default function Home() {
           )}
         </div>
       </header>
+      {!vpnConnected ? (
+        <div className="vpn-disclaimer">
+          <span className="vpn-disclaimer-icon">⚠</span>
+          <span>
+            <strong>Your VPN is off.</strong> Because of this, fetching data from FMCSA and enriching emails via LoadGuard.ai may fail or get blocked.
+            We are not responsible for incomplete or failed results while your VPN is disconnected — please connect your VPN before scanning.
+          </span>
+        </div>
+      ) : null}
       <section className="hero">
         <div>
           <p className="eyebrow">CARRIER DISCOVERY</p>
@@ -209,6 +336,14 @@ export default function Home() {
           <p style={{ marginTop: "18px", color: "var(--muted)", fontSize: "14px" }}>{authBanner}</p>
         </div>
         <div className="panel">
+          {vpnBlockedNotice ? (
+            <div className="vpn-blocked-banner">
+              <span className="vpn-status-dot" style={{ background: "#c0392b" }} />
+              <span>
+                <strong>Your VPN is not working properly.</strong> This VPN server/location is being blocked by FMCSA — please switch to a different VPN server and try scanning again.
+              </span>
+            </div>
+          ) : null}
           <div className="fields">
             <label>Starting MC<input type="number" min="1" value={start} disabled={running} onChange={(e) => setStart(Number(e.target.value) || 1)} /></label>
             <span>to</span>
@@ -230,17 +365,80 @@ export default function Home() {
               <a href="/login" style={{ color: "var(--green)", textDecoration: "underline" }}>Sign in</a> or <a href="/register" style={{ color: "var(--green)", textDecoration: "underline" }}>register</a> to continue.
             </div>
           ) : null}
+
+          {vpnNotice ? (
+            <div className="vpn-notice">
+              <strong>⚠ {vpnNotice}</strong>
+            </div>
+          ) : null}
+
+          {running ? (
+            <div className="scan-live">
+              {scanPaused ? (
+                <div className="scan-paused-banner">
+                  <span className="vpn-status-dot" style={{ background: "#c0392b" }} />
+                  <span>Scan paused — VPN disconnected. Will auto-resume once VPN reconnects.</span>
+                </div>
+              ) : (
+                <div className="scan-live-head">
+                  <span className="scan-live-dot" />
+                  <span>Scanning live</span>
+                  <span className="scan-live-speed">{scanSpeed.toFixed(1)} MC/sec</span>
+                </div>
+              )}
+              <div className="scan-progress-track">
+                <div
+                  className="scan-progress-fill"
+                  style={{ width: progress.total ? `${(progress.done / progress.total) * 100}%` : "0%" }}
+                />
+              </div>
+              <div className="scan-progress-label">{progress.done} / {progress.total} checked</div>
+              <div className="scan-chip-row">
+                {completedMcs.slice().reverse().map(({ mc, matched }) => (
+                  <span key={mc} className={`scan-chip scan-chip-done ${matched ? "matched" : ""}`}>
+                    MC-{mc}
+                  </span>
+                ))}
+                {currentMc !== null ? (
+                  <span className="scan-chip scan-chip-current">
+                    <span className="scan-chip-spinner" />
+                    MC-{currentMc}
+                  </span>
+                ) : null}
+                {Array.from({ length: 4 }, (_, i) => (currentMc ?? 0) + i + 1)
+                  .filter((mc) => mc <= end)
+                  .map((mc) => (
+                    <span key={mc} className="scan-chip scan-chip-upcoming">MC-{mc}</span>
+                  ))}
+              </div>
+            </div>
+          ) : null}
         </div>
       </section>
       <section className="filters"><span>FILTERS APPLIED</span><b>Carrier entity</b><b>Active USDOT</b><b>Authorized for property</b><b>U.S. address</b><b>General Freight</b></section>
       <section className="results">
-        <div className="resultsHead"><div><h2>Matching carriers</h2><p>{status}</p></div><div><button disabled={!rows.length || running} onClick={downloadCsv}>Download CSV</button><button disabled={!rows.length || running} onClick={createSheet}>Create Google Sheet</button></div></div>
-        <div className="tableWrap"><table><thead><tr><th>MC</th><th>USDOT</th><th>Legal name</th><th>Phone</th><th>Email</th><th>Physical address</th></tr></thead><tbody>{rows.length ? rows.map((r, i) => <tr key={`${r.mcNumber}-${i}`}><td>MC-{r.mcNumber}</td><td>{r.usdotNumber}</td><td><strong>{r.legalName}</strong></td><td>{r.phone || "—"}</td><td>{r.email || "Not published"}</td><td>{r.physicalAddress}</td></tr>) : <tr><td className="empty" colSpan={6}>Matching carriers will appear here as the scan runs.</td></tr>}</tbody></table></div>
+        <div className="resultsHead"><div><h2>Matching carriers {rows.length ? <span className="results-count">{rows.length}</span> : null}</h2><p>{status}</p></div><div><button disabled={!rows.length || running} onClick={downloadCsv}>Download CSV</button><button disabled={!rows.length || running} onClick={createSheet}>Create Google Sheet</button></div></div>
+        <div className="tableWrap"><table><thead><tr><th>MC</th><th>USDOT</th><th>Legal name</th><th>Phone</th><th>Email</th><th>Physical address</th></tr></thead><tbody>{rows.length ? rows.map((r, i) => <tr key={`${r.mcNumber}-${i}`} className={r.mcNumber === latestMc ? "row-new" : ""}><td>MC-{r.mcNumber}</td><td>{r.usdotNumber}</td><td><strong>{r.legalName}</strong></td><td>{r.phone || "—"}</td><td>{r.email || "Not published"}</td><td>{r.physicalAddress}</td></tr>) : <tr><td className="empty" colSpan={6}>Matching carriers will appear here as the scan runs.</td></tr>}</tbody></table></div>
       </section>
       <footer style={{ display: "grid", gap: 12, textAlign: "center" }}>
         <div style={{ fontSize: 13, color: "var(--muted)" }}>Use responsibly. Data remains subject to FMCSA source accuracy and availability.</div>
         <div style={{ fontWeight: 700, fontSize: 15, color: "var(--text)" }}>Developed by Rohail Asad © All rights reserved</div>
       </footer>
+
+      {showVpnModal ? (
+        <div className="vpn-modal-overlay" onClick={() => setShowVpnModal(false)}>
+          <div className="vpn-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="vpn-modal-icon">
+              <span className="vpn-status-dot" style={{ background: "#c0392b", width: 12, height: 12 }} />
+            </div>
+            <h3>VPN not connected</h3>
+            <p>Your VPN is not connected. Kindly connect your VPN to start scanning.</p>
+            <div className="vpn-modal-actions">
+              <button className="vpn-modal-ok" onClick={() => setShowVpnModal(false)}>OK, got it</button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </main>
   );
 }
